@@ -1,8 +1,19 @@
 CC = gcc -std=gnu99
-CFLAGS := -Wall -Wextra -pedantic -O2 -g -D_REENTRANT $(CFLAGS)
-LDLIBS := -lpulse -lm
 
-ponymix: ponymix.o
+libnotify_CFLAGS = $(shell pkg-config --cflags libnotify)
+libnotify_LIBS = $(shell pkg-config --libs libnotify)
+
+libpulse_CFLAGS = $(shell pkg-config --cflags libpulse)
+libpulse_LIBS = $(shell pkg-config --libs libpulse)
+
+ifdef libnotify_LIBS
+libnotify_CFLAGS += -DHAVE_NOTIFY
+endif
+
+CFLAGS := -Wall -Wextra -pedantic -O2 -g $(libpulse_CFLAGS) $(libnotify_CFLAGS) $(CFLAGS)
+LDLIBS := -lm $(libpulse_LIBS) $(libnotify_LIBS)
+
+all: ponymix
 
 install: ponymix
 	install -Dm755 ponymix $(DESTDIR)/usr/bin/ponymix

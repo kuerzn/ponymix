@@ -37,8 +37,13 @@
 
 #include <pulse/pulseaudio.h>
 
+#ifdef HAVE_NOTIFY
+#include <libnotify/notify.h>
+#endif
+
 #define UNUSED __attribute__((unused))
 
+#undef CLAMP
 #define CLAMP(x, low, high) \
 	__extension__ ({ \
 		typeof(x) _x = (x); \
@@ -146,6 +151,7 @@ struct pulseaudio_t {
 
 	char *default_sink;
 	char *default_source;
+	int notify;
 };
 
 struct colstr_t {
@@ -173,6 +179,47 @@ struct arg_t {
 	struct io_t *devices;
 	struct io_t *target;
 };
+
+#ifdef HAVE_NOTIFY
+static void send_notification(const char *icon, int volume_percent)
+{
+	NotifyNotification *notification;
+
+	if (!notify_init("ponymix")) {
+		fprintf(stderr, "failed to initialize libnotify\n");
+		return;
+	}
+
+	notification = notify_notification_new("ponymix", "", icon);
+	notify_notification_set_timeout(notification, 1000);
+	notify_notification_set_urgency(notification, NOTIFY_URGENCY_NORMAL);
+	notify_notification_set_hint_int32(notification, "value", volume_percent);
+	notify_notification_set_hint_string(notification, "synchronous", "volume");
+	notify_notification_show(notification, NULL);
+
+	g_object_unref(G_OBJECT(notification));
+	notify_uninit();
+}
+
+static void send_voladj_notification(int volume_percent, int mute)
+{
+	const char *icon = "notification-audio-volume-muted";
+
+	if (!mute) {
+		if (volume_percent > 67)
+			icon = "notification-audio-volume-high";
+		else if (volume_percent > 33)
+			icon = "notification-audio-volume-medium";
+		else if (volume_percent > 0)
+			icon = "notification-audio-volume-low";
+	}
+
+	send_notification(icon, volume_percent);
+}
+#else
+static void send_notification(const char UNUSED *i, int UNUSED v) {}
+static void send_voladj_notification(int UNUSED v, int UNUSED mute) {}
+#endif
 
 static int xstrtol(const char *str, long *out)
 {
@@ -360,9 +407,11 @@ static int set_volume(struct pulseaudio_t *pulse, struct io_t *dev, long v)
 			success_cb, &success);
 	pulse_async_wait(pulse, op);
 
-	if (success)
+	if (success) {
 		printf("%ld\n", v);
-	else {
+		if (pulse->notify)
+			send_voladj_notification(v, dev->mute);
+	} else {
 		int err = pa_context_errno(pulse->cxt);
 		fprintf(stderr, "failed to set volume: %s\n", pa_strerror(err));
 	}
@@ -415,7 +464,8 @@ static int set_mute(struct pulseaudio_t *pulse, struct io_t *dev, int mute)
 	if (!success) {
 		int err = pa_context_errno(pulse->cxt);
 		fprintf(stderr, "failed to mute device: %s\n", pa_strerror(err));
-	}
+	} else if (pulse->notify)
+		send_voladj_notification(dev->volume_percent, mute);
 
 	pa_operation_unref(op);
 
@@ -854,6 +904,7 @@ int main(int argc, char *argv[])
 		{ "app", no_argument, 0, 'a' },
 		{ "device", no_argument, 0, 'd' },
 		{ "help", no_argument, 0, 'h' },
+		{ "notify", no_argument, 0, 'N' },
 		{ "sink", optional_argument, 0, 'o' },
 		{ "output", optional_argument, 0, 'o' },
 		{ "source", optional_argument, 0, 'i' },
@@ -862,7 +913,7 @@ int main(int argc, char *argv[])
 	};
 
 	for (;;) {
-		int opt = getopt_long(argc, argv, "adhi::o::", opts, NULL);
+		int opt = getopt_long(argc, argv, "adhi::No::", opts, NULL);
 		if (opt == -1)
 			break;
 
@@ -886,6 +937,13 @@ int main(int argc, char *argv[])
 			run.get_default = get_default_source;
 			run.get_by_name = find_source;
 			run.pp_name = "source";
+			break;
+		case 'N':
+#ifdef HAVE_NOTIFY
+			pulse.notify = 1;
+#else
+			warnx("no libnotify support available, ignoring option");
+#endif
 			break;
 		default:
 			return EXIT_FAILURE;
